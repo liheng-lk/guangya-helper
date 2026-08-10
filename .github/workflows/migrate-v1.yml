@@ -1,0 +1,206 @@
+name: Migrate Guangya Helper v1.0
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/migrate-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout new repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch latest stable source
+        run: |
+          git clone --depth 1 https://github.com/liheng-lk/Guangyadisk.git /tmp/guangya-source
+
+      - name: Migrate source and rebrand v1.0
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+          import shutil
+
+          src = Path('/tmp/guangya-source')
+          dst = Path('.')
+
+          # Copy the complete current source snapshot, while keeping this repository independent.
+          for item in src.iterdir():
+              if item.name in {'.git', '.github', 'README.md', 'LICENSE'}:
+                  continue
+              target = dst / item.name
+              if target.exists():
+                  if target.is_dir():
+                      shutil.rmtree(target)
+                  else:
+                      target.unlink()
+              if item.is_dir():
+                  shutil.copytree(item, target)
+              else:
+                  shutil.copy2(item, target)
+
+          root = Path('plugins.v2/shukguangyadisk')
+          text_suffixes = {'.py', '.js', '.vue', '.md', '.json', '.yml', '.yaml', '.css', '.html'}
+          for path in root.rglob('*'):
+              if not path.is_file() or path.suffix.lower() not in text_suffixes:
+                  continue
+              try:
+                  text = path.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  continue
+
+              text = text.replace('https://github.com/liheng-lk/Guangyadisk', 'https://github.com/liheng-lk/guangya-helper')
+              text = text.replace('https://github.com/ShukeBta/Guangyadisk', 'https://github.com/liheng-lk/guangya-helper')
+              text = text.replace('【Shuk-光鸭云盘】', '【光鸭云盘助手】')
+              text = text.replace('【光鸭云盘】', '【光鸭云盘助手】')
+              text = text.replace('【WebDAV】', '【光鸭云盘助手】【WebDAV】')
+              text = text.replace('Shuk-光鸭云盘客户端创建失败', '光鸭云盘助手客户端创建失败')
+
+              # User-visible project branding. Keep class/plugin IDs for MoviePilot compatibility.
+              text = text.replace('plugin_name = "Shuk-光鸭云盘"', 'plugin_name = "光鸭云盘助手"')
+              text = text.replace('_disk_name = "Shuk-光鸭云盘"', '_disk_name = "光鸭云盘助手"')
+              text = text.replace('plugin_author = "ShukeBta"', 'plugin_author = "liheng-lk"')
+              text = text.replace('author_url = "https://github.com/ShukeBta/Guangyadisk"', 'author_url = "https://github.com/liheng-lk/guangya-helper"')
+
+              path.write_text(text, encoding='utf-8')
+
+          # Remove the temporary runtime log adapter from the wrapper: source files are now clean directly.
+          init_path = root / '__init__.py'
+          text = init_path.read_text(encoding='utf-8')
+          text = text.replace('from app.log import logger as _base_logger', 'from app.log import logger')
+          for line in [
+              'from . import _plugin_legacy as _plugin_legacy_module\n',
+              'from . import guangya_api as _guangya_api_module\n',
+              'from . import guangya_api_legacy as _guangya_api_legacy_module\n',
+              'from . import guangya_client as _guangya_client_module\n',
+              'from . import guangya_client_legacy as _guangya_client_legacy_module\n',
+              'from . import webdav_provider as _webdav_provider_module\n',
+          ]:
+              text = text.replace(line, '')
+          text = re.sub(
+              r'\nclass _UnifiedLogPrefixAdapter:.*?\n\nclass ShukGuangYaDisk\(_LegacyPlugin\):',
+              '\n\nclass ShukGuangYaDisk(_LegacyPlugin):',
+              text,
+              flags=re.S,
+          )
+          text = re.sub(r'plugin_version\s*=\s*"[^"]+"', 'plugin_version = "1.0"', text, count=1)
+          text = re.sub(r'author_url\s*=\s*"[^"]+"', 'author_url = "https://github.com/liheng-lk/guangya-helper"', text, count=1)
+          # Keep exactly one historical storage label for migration of existing MoviePilot configs.
+          text = re.sub(r'_legacy_disk_name\s*=\s*"[^"]+"', '_legacy_disk_name = "Shuk-光鸭云盘"', text, count=1)
+          init_path.write_text(text, encoding='utf-8')
+
+          # Bring legacy implementation metadata in line with the independent project.
+          legacy = root / '_plugin_legacy.py'
+          text = legacy.read_text(encoding='utf-8')
+          text = text.replace('plugin_name = "Shuk-光鸭云盘"', 'plugin_name = "光鸭云盘助手"')
+          text = text.replace('_disk_name = "Shuk-光鸭云盘"', '_disk_name = "光鸭云盘助手"')
+          text = re.sub(r'plugin_version\s*=\s*"[^"]+"', 'plugin_version = "1.0"', text, count=1)
+          text = re.sub(r'plugin_author\s*=\s*"[^"]+"', 'plugin_author = "liheng-lk"', text, count=1)
+          text = re.sub(r'author_url\s*=\s*"[^"]+"', 'author_url = "https://github.com/liheng-lk/guangya-helper"', text, count=1)
+          legacy.write_text(text, encoding='utf-8')
+
+          # Plugin metadata: the independent project starts at v1.0.
+          plugin_json = root / 'plugin.json'
+          pdata = json.loads(plugin_json.read_text(encoding='utf-8'))
+          pdata['name'] = '光鸭云盘助手'
+          pdata['description'] = 'MoviePilot 光鸭云盘存储助手，支持扫码/短信登录、目录浏览、整理上传、进度监控、网络容错、下载、移动、复制和 WebDAV。'
+          pdata['version'] = '1.0'
+          pdata['author'] = 'liheng-lk'
+          pdata['history'] = {
+              'v1.0': '独立项目首个正式版本：整合 MoviePilot V2 兼容、Vue UI、扫码/短信登录、整理上传、上传进度监控、DNS/OSS 重试与 WebDAV。'
+          }
+          plugin_json.write_text(json.dumps(pdata, ensure_ascii=False, separators=(',', ':')), encoding='utf-8')
+
+          # Front-end package uses semver while the plugin display version is v1.0.
+          pkg = root / 'package.json'
+          if pkg.exists():
+              data = json.loads(pkg.read_text(encoding='utf-8'))
+              data['name'] = 'moviepilot-guangya-helper'
+              data['version'] = '1.0.0'
+              data['description'] = '光鸭云盘助手 MoviePilot Vue 前端'
+              data['author'] = 'liheng-lk'
+              data['repository'] = {'type': 'git', 'url': 'https://github.com/liheng-lk/guangya-helper.git'}
+              pkg.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          # Root plugin-source metadata.
+          for p in [Path('plugin.json'), Path('package.v2.json')]:
+              if not p.exists():
+                  continue
+              try:
+                  data = json.loads(p.read_text(encoding='utf-8'))
+              except Exception:
+                  continue
+              def rewrite(obj):
+                  if isinstance(obj, dict):
+                      for k, v in list(obj.items()):
+                          if k == 'name' and isinstance(v, str) and ('光鸭' in v or 'Shuk' in v):
+                              obj[k] = '光鸭云盘助手'
+                          elif k == 'author' and isinstance(v, str):
+                              obj[k] = 'liheng-lk'
+                          elif k == 'version' and isinstance(v, str):
+                              obj[k] = '1.0'
+                          elif isinstance(v, (dict, list)):
+                              rewrite(v)
+                          elif isinstance(v, str):
+                              obj[k] = v.replace('https://github.com/liheng-lk/Guangyadisk', 'https://github.com/liheng-lk/guangya-helper')
+                  elif isinstance(obj, list):
+                      for x in obj:
+                          rewrite(x)
+              rewrite(data)
+              p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          # Fresh documentation for the independent repository.
+          Path('README.md').write_text('''# 光鸭云盘助手\n\n**Guangya Helper** 是由 `liheng-lk` 维护的 MoviePilot V2 光鸭云盘存储插件。\n\n当前正式版本：**v1.0**  \n正式仓库：`https://github.com/liheng-lk/guangya-helper`\n\n## 功能\n\n- 光鸭云盘 App 扫码授权登录\n- 手机号短信验证码登录\n- Token 自动刷新\n- 文件浏览、上传、下载、删除、重命名、新建目录\n- MoviePilot 外部存储与整理上传\n- 可开关的实时上传进度日志\n- 临时 DNS / OSS 上传故障自动重试\n- 上传完成后的目标文件可见性兜底确认\n- HTTP Range 流式代理\n- WebDAV\n- MoviePilot Vue Federation `Page` / `Config`\n- PC、平板、手机响应式界面\n\n## 安装\n\nMoviePilot 自定义插件源添加：\n\n```text\nhttps://github.com/liheng-lk/guangya-helper\n```\n\n刷新插件市场后安装 **光鸭云盘助手**。\n\n## 版本\n\n本独立项目从 **v1.0** 重新开始版本体系。v1.0 以迁移时 `Guangyadisk/main` 的最新稳定代码为功能基线，不继承旧项目版本号。\n\n## 兼容说明\n\n为了让已安装 MoviePilot 用户平滑迁移，内部 Python 类名、插件配置前缀以及历史存储名称识别可能继续保留旧 ID；这些仅用于兼容，不作为项目品牌或用户可见名称。\n\n## 致谢与参考\n\n- **ShukeBta / Guangyadisk**：早期 GuangYaDisk / MoviePilot 存储实现与历史代码基础；\n- **KoWming / MoviePilot-Plugins**：光鸭云盘扫码授权流程参考；\n- **DDSRem-Dev / guangyaclient**：光鸭认证、短信登录及接口行为参考；\n- **jxxghp / MoviePilot-Plugins**：MoviePilot V2 插件与 Vue Federation 开发规范参考。\n\n感谢上述项目作者以及其他历史贡献者。\n\n## License\n\nMIT。原有 MIT 版权声明依许可证要求继续保留，当前项目的整合、修改与持续维护版权同时注明于 LICENSE。\n''', encoding='utf-8')
+
+          Path('LICENSE').write_text('''MIT License\n\nCopyright (c) 2026 ShukeBta\nCopyright (c) 2026 liheng-lk (modifications, integration and continued maintenance)\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the "Software"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n''', encoding='utf-8')
+
+          (root / 'README.md').write_text('''# 光鸭云盘助手 v1.0\n\nMoviePilot V2 光鸭云盘存储插件。\n\n维护者：`liheng-lk`  \n仓库：`https://github.com/liheng-lk/guangya-helper`\n\n支持扫码/短信登录、目录浏览、整理上传、上传进度监控、DNS/OSS 网络容错、下载/移动/复制、HTTP Range 与 WebDAV。\n\n详细安装与致谢信息见仓库根目录 README。\n''', encoding='utf-8')
+
+          # Verify user-visible legacy log prefixes are gone from runtime Python source.
+          forbidden = ['【Shuk-光鸭云盘】', '【光鸭云盘】', '【WebDAV】']
+          failures = []
+          for path in root.rglob('*.py'):
+              content = path.read_text(encoding='utf-8')
+              for marker in forbidden:
+                  if marker in content:
+                      failures.append(f'{path}: {marker}')
+          if failures:
+              raise SystemExit('Legacy user-visible log prefixes remain:\n' + '\n'.join(failures))
+
+          # The only intended old display-name literal is the migration compatibility constant.
+          occurrences = []
+          for path in root.rglob('*.py'):
+              for lineno, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                  if 'Shuk-光鸭云盘' in line:
+                      occurrences.append((str(path), lineno, line.strip()))
+          invalid = [x for x in occurrences if not (x[0].endswith('__init__.py') and '_legacy_disk_name' in x[2])]
+          if invalid:
+              raise SystemExit('Unexpected old display-name literals remain:\n' + '\n'.join(map(str, invalid)))
+          PY
+
+      - name: Validate Python and frontend syntax
+        shell: bash
+        run: |
+          python -m compileall -q plugins.v2/shukguangyadisk
+          find plugins.v2/shukguangyadisk/dist/assets -maxdepth 1 -name '*.js' -print0 | xargs -0 -r -n1 node --check
+
+      - name: Commit v1.0 migration and remove one-time workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/migrate-v1.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: migrate Guangya Helper v1.0 baseline'
+          git push
