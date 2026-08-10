@@ -1,7 +1,4 @@
 # 光鸭云盘助手
-
-Guangya Helper 是由 **liheng-lk** 维护的 MoviePilot V2 光鸭云盘存储插件。
-
 当前版本：**v1.0**
 
 正式仓库：`https://github.com/liheng-lk/guangya-helper`
